@@ -74,7 +74,12 @@ namespace swss
             return false;
         }
 
-        ovalues = table[key];
+        // As swss-common Table::get(), which strips "@..." from field names ("vlan@" reads as "vlan")
+        ovalues.clear();
+        for (const auto &fv : table[key])
+        {
+            ovalues.emplace_back(stripSpecialSym(fvField(fv)), fvValue(fv));
+        }
         return true;
     }
 

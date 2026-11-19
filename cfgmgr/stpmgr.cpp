@@ -1320,9 +1320,12 @@ void StpMgr::doStpMstInstTask(Consumer &consumer)
                         priority = static_cast<uint16_t>(parsedPriority);
                     }
                 }
-                else if (fvField(i) == "vlan@")
+                else if (fvField(i) == "vlan")
                 {
-                    // YANG leaf-list "vlan", stored by ConfigDBConnector as "vlan@": "10,20"
+                    /*
+                     * YANG leaf-list "vlan". ConfigDBConnector stores it as "vlan@": "10,20",
+                     * and swss::Table::get() strips the "@" from field names.
+                     */
                     configValid = parseVlanList(fvValue(i), vlan_ids);
                 }
 
