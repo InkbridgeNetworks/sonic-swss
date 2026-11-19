@@ -734,10 +734,6 @@ void StpMgr::processStpPortAttr(const string op,
             {
                 msg->root_guard = (value == "true") ? 1 : 0;
             }
-            else if (field == "loop_guard")
-            {
-                msg->loop_guard = (value == "true") ? 1 : 0;
-            }
             else if (field == "bpdu_guard")
             {
                 msg->bpdu_guard = (value == "true") ? 1 : 0;

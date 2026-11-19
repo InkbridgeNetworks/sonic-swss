@@ -18,12 +18,6 @@
 #include <stddef.h>
 #include <algorithm>
 
-// We remove PACKED definitions, only keep ALIGNED
-#if defined(__GNUC__)
-#define ALIGNED(x) __attribute__((aligned(x)))
-#else
-#define ALIGNED(x)
-#endif
 
 #define STPMGRD_SOCK_NAME "/var/run/stpmgrd.sock"
 
@@ -48,7 +42,12 @@
 
 #define STPD_SOCK_NAME "/var/run/stpipc.sock"
 
-// Enumerations must match stp_ipc.h
+/*
+ * IPC messages to stpd. stpd casts each received buffer to the matching type in
+ * include/stp_ipc.h of sonic-stp, so every enum value and struct layout below must
+ * match that file byte for byte. The static_asserts after the definitions hold the
+ * offsets of stp_ipc.h at sonic-stp commit 1a8d2e65afb29b0ea388d488853c4979c7fcac81.
+ */
 typedef enum L2_PROTO_MODE {
     L2_NONE,
     L2_PVSTP,
@@ -73,6 +72,7 @@ typedef enum STP_MSG_TYPE {
     STP_STPCTL_MSG,
     STP_MST_GLOBAL_CONFIG,
     STP_MST_INST_CONFIG,
+    STP_MST_VLAN_PORT_LIST_CONFIG,
     STP_MST_INST_PORT_CONFIG,
     STP_MAX_MSG
 } STP_MSG_TYPE;
@@ -93,48 +93,39 @@ typedef enum STP_CTL_TYPE {
     STP_CTL_CLEAR_VLAN,
     STP_CTL_CLEAR_INTF,
     STP_CTL_CLEAR_VLAN_INTF,
+    STP_CTL_DUMP_MST,
+    STP_CTL_DUMP_MST_PORT,
     STP_CTL_MAX
 } STP_CTL_TYPE;
 
-// Remove PACKED, add ALIGNED(4)
 typedef struct STP_IPC_MSG {
     int          msg_type;
     unsigned int msg_len;
     L2_PROTO_MODE proto_mode;
     char         data[0];
-} ALIGNED(4) STP_IPC_MSG;
+} __attribute__((aligned(4))) STP_IPC_MSG;
 
 #define STP_SET_COMMAND 1
 #define STP_DEL_COMMAND 0
 
-// Add padding for alignment if needed (compare to stp_ipc.h)
 typedef struct STP_INIT_READY_MSG {
     uint8_t  opcode; // enable/disable
     uint16_t max_stp_instances;
-    // Example: potential extra padding if alignment warnings arise
-    // uint8_t  padding[1];
-} ALIGNED(4) STP_INIT_READY_MSG;
+} __attribute__((packed)) STP_INIT_READY_MSG;
 
-// Add padding for alignment if needed
 typedef struct STP_BRIDGE_CONFIG_MSG {
     uint8_t opcode;       // enable/disable
     uint8_t stp_mode;
     int     rootguard_timeout;
     uint8_t base_mac_addr[6];
-    // Potential padding for alignment:
-    // uint8_t padding[2];
-} ALIGNED(4) STP_BRIDGE_CONFIG_MSG;
+} __attribute__((packed)) STP_BRIDGE_CONFIG_MSG;
 
-// Must match the version in stp_ipc.h exactly
 typedef struct PORT_ATTR {
-    char   intf_name[IFNAMSIZ]; // 16 bytes typically
-    int8_t mode;
+    char    intf_name[IFNAMSIZ];
+    int8_t  mode;
     uint8_t enabled;
-    // Add padding to align to 4 bytes
-    uint16_t padding;
-} ALIGNED(4) PORT_ATTR;
+} PORT_ATTR;
 
-// Must match the version in stp_ipc.h exactly
 typedef struct STP_VLAN_CONFIG_MSG {
     uint8_t   opcode;      // enable/disable
     uint8_t   newInstance;
@@ -146,7 +137,7 @@ typedef struct STP_VLAN_CONFIG_MSG {
     int       priority;
     int       count;
     PORT_ATTR port_list[0];
-} ALIGNED(4) STP_VLAN_CONFIG_MSG;
+} __attribute__((packed)) STP_VLAN_CONFIG_MSG;
 
 typedef struct STP_VLAN_PORT_CONFIG_MSG {
     uint8_t opcode;  // enable/disable
@@ -155,26 +146,24 @@ typedef struct STP_VLAN_PORT_CONFIG_MSG {
     int     inst_id;
     int     path_cost;
     int     priority;
-} ALIGNED(4) STP_VLAN_PORT_CONFIG_MSG;
+} __attribute__((packed)) STP_VLAN_PORT_CONFIG_MSG;
 
 typedef struct VLAN_ATTR {
-    int   inst_id;
-    int   vlan_id;
-    int8_t mode;
-    // Add padding to align to 4 bytes
+    int8_t  mode;
     uint8_t padding[3];
-} ALIGNED(4) VLAN_ATTR;
+    int     inst_id;
+    int     vlan_id;
+} VLAN_ATTR;
 
-typedef struct VLAN_LIST{
+typedef struct VLAN_LIST {
     uint16_t    vlan_id;
-}VLAN_LIST;
+} VLAN_LIST;
 
 typedef struct STP_PORT_CONFIG_MSG {
     uint8_t     opcode;             // enable/disable
     char        intf_name[IFNAMSIZ];
     uint8_t     enabled;
     uint8_t     root_guard;
-    uint8_t     loop_guard;
     uint8_t     bpdu_guard;
     uint8_t     bpdu_guard_do_disable;
     uint8_t     portfast;           // PVST only
@@ -189,16 +178,15 @@ typedef struct STP_PORT_CONFIG_MSG {
 
 typedef struct STP_VLAN_MEM_CONFIG_MSG {
     uint8_t opcode;   // enable/disable
+    uint8_t enabled;
+    int8_t  mode;
+    uint8_t padding;
     int     vlan_id;
     int     inst_id;
     char    intf_name[IFNAMSIZ];
-    uint8_t enabled;
-    int8_t  mode;
-    // Add 1 byte padding
-    uint8_t padding;
     int     path_cost;
     int     priority;
-} ALIGNED(4) STP_VLAN_MEM_CONFIG_MSG;
+} STP_VLAN_MEM_CONFIG_MSG;
 
 typedef struct STP_MST_GLOBAL_CONFIG_MSG {
     uint8_t     opcode; // enable/disable
@@ -210,6 +198,7 @@ typedef struct STP_MST_GLOBAL_CONFIG_MSG {
     uint8_t     max_hops;
 }__attribute__ ((packed))STP_MST_GLOBAL_CONFIG_MSG;
 
+// One instance in an STP_MST_INSTANCE_CONFIG_MSG. stp_ipc.h names it MST_INST_CONFIG_MSG.
 typedef struct STP_MST_INST_CONFIG_MSG {
     uint8_t         opcode;     // enable/disable
     uint16_t        mst_id;     // MST instance ID
@@ -218,6 +207,12 @@ typedef struct STP_MST_INST_CONFIG_MSG {
     VLAN_LIST       vlan_list[0]; // Flexible array for VLAN IDs
 }__attribute__((packed)) STP_MST_INST_CONFIG_MSG;
 
+// Body of STP_MST_INST_CONFIG: a count followed by that many instances.
+typedef struct STP_MST_INSTANCE_CONFIG_MSG {
+    uint8_t                 mst_count;
+    STP_MST_INST_CONFIG_MSG mst_list[0];
+} STP_MST_INSTANCE_CONFIG_MSG;
+
 typedef struct STP_MST_INST_PORT_CONFIG_MSG {
     uint8_t     opcode;         // enable/disable
     char        intf_name[IFNAMSIZ];  // Interface name
@@ -225,6 +220,52 @@ typedef struct STP_MST_INST_PORT_CONFIG_MSG {
     int         path_cost;      // Path cost
     int         priority;       // Port priority
 } __attribute__((packed)) STP_MST_INST_PORT_CONFIG_MSG;
+
+typedef struct PORT_LIST {
+    char        intf_name[IFNAMSIZ];
+    int8_t      tagging_mode;
+} PORT_LIST;
+
+// Body of STP_MST_VLAN_PORT_LIST_CONFIG: members added to or removed from one VLAN.
+typedef struct STP_MST_VLAN_PORT_MAP {
+    uint16_t    vlan_id;
+    uint16_t    port_count;
+    int8_t      stp_mode;
+    uint8_t     add;
+    PORT_LIST   port_list[0];
+} STP_MST_VLAN_PORT_MAP;
+
+// stpd receives into a 4096 byte buffer (stpmgr_recv_client_msg in stp/stp_mgr.c)
+#define STPD_IPC_BUFFER_SIZE 4096
+
+static_assert(STP_MST_INST_PORT_CONFIG == 11, "STP_MSG_TYPE differs from stp_ipc.h");
+static_assert(sizeof(STP_IPC_MSG) == 12, "STP_IPC_MSG differs from stp_ipc.h");
+static_assert(sizeof(STP_INIT_READY_MSG) == 3 && offsetof(STP_INIT_READY_MSG, max_stp_instances) == 1,
+              "STP_INIT_READY_MSG differs from stp_ipc.h");
+static_assert(sizeof(STP_BRIDGE_CONFIG_MSG) == 12 && offsetof(STP_BRIDGE_CONFIG_MSG, base_mac_addr) == 6,
+              "STP_BRIDGE_CONFIG_MSG differs from stp_ipc.h");
+static_assert(sizeof(PORT_ATTR) == 18, "PORT_ATTR differs from stp_ipc.h");
+static_assert(sizeof(STP_VLAN_CONFIG_MSG) == 30 && offsetof(STP_VLAN_CONFIG_MSG, count) == 26,
+              "STP_VLAN_CONFIG_MSG differs from stp_ipc.h");
+static_assert(sizeof(STP_VLAN_PORT_CONFIG_MSG) == 33 && offsetof(STP_VLAN_PORT_CONFIG_MSG, priority) == 29,
+              "STP_VLAN_PORT_CONFIG_MSG differs from stp_ipc.h");
+static_assert(sizeof(VLAN_ATTR) == 12 && offsetof(VLAN_ATTR, mode) == 0 && offsetof(VLAN_ATTR, vlan_id) == 8,
+              "VLAN_ATTR differs from stp_ipc.h");
+static_assert(sizeof(STP_PORT_CONFIG_MSG) == 40 && offsetof(STP_PORT_CONFIG_MSG, edge_port) == 23 &&
+              offsetof(STP_PORT_CONFIG_MSG, link_type) == 24 && offsetof(STP_PORT_CONFIG_MSG, count) == 36,
+              "STP_PORT_CONFIG_MSG differs from stp_ipc.h");
+static_assert(sizeof(STP_VLAN_MEM_CONFIG_MSG) == 36 && offsetof(STP_VLAN_MEM_CONFIG_MSG, enabled) == 1 &&
+              offsetof(STP_VLAN_MEM_CONFIG_MSG, intf_name) == 12,
+              "STP_VLAN_MEM_CONFIG_MSG differs from stp_ipc.h");
+static_assert(sizeof(STP_MST_GLOBAL_CONFIG_MSG) == 41, "STP_MST_GLOBAL_CONFIG_MSG differs from stp_ipc.h");
+static_assert(sizeof(STP_MST_INST_CONFIG_MSG) == 9 && offsetof(STP_MST_INST_CONFIG_MSG, vlan_count) == 7,
+              "MST_INST_CONFIG_MSG differs from stp_ipc.h");
+static_assert(sizeof(STP_MST_INSTANCE_CONFIG_MSG) == 1, "STP_MST_INSTANCE_CONFIG_MSG differs from stp_ipc.h");
+static_assert(sizeof(STP_MST_INST_PORT_CONFIG_MSG) == 27 && offsetof(STP_MST_INST_PORT_CONFIG_MSG, mst_id) == 17,
+              "STP_MST_INST_PORT_CONFIG_MSG differs from stp_ipc.h");
+static_assert(sizeof(PORT_LIST) == 17, "PORT_LIST differs from stp_ipc.h");
+static_assert(sizeof(STP_MST_VLAN_PORT_MAP) == 6 && offsetof(STP_MST_VLAN_PORT_MAP, add) == 5,
+              "STP_MST_VLAN_PORT_MAP differs from stp_ipc.h");
 
 namespace swss {
 
