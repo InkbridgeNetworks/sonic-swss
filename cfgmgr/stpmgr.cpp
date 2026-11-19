@@ -7,6 +7,7 @@
 #include <string>
 #include <cstdlib>
 #include <cctype>
+#include <cstdint>
 
 #include <iostream>
 #include <algorithm>
@@ -45,6 +46,29 @@ static bool parseInteger(const std::string &value, int &result, const char *fiel
         SWSS_LOG_ERROR("Invalid integer for %s: '%s' (%s)", field, value.c_str(), e.what());
         return false;
     }
+}
+
+/*
+ * Parse an MST instance ID. The YANG model (sonic-spanning-tree.yang) types the
+ * STP_MST_INST "instance" key as uint16, and STP_MST_PORT "inst_id" refers to it.
+ */
+static bool parseMstInstance(const std::string &value, uint16_t &result, const char *field)
+{
+    int parsed;
+
+    if (!parseInteger(value, parsed, field))
+    {
+        return false;
+    }
+
+    if (parsed < 0 || parsed > UINT16_MAX)
+    {
+        SWSS_LOG_ERROR("MST instance for %s out of range: '%s'", field, value.c_str());
+        return false;
+    }
+
+    result = static_cast<uint16_t>(parsed);
+    return true;
 }
 
 StpMgr::StpMgr(DBConnector *confDb, DBConnector *applDb, DBConnector *statDb,
@@ -1200,15 +1224,15 @@ void StpMgr::doStpMstInstTask(Consumer &consumer)
         string key = kfvKey(t);
         string op = kfvOp(t);
 
-        string instance = key.substr(13); // Remove "MST_INSTANCE|" prefix
-        int parsedInstance;
-        if (!parseInteger(instance, parsedInstance, "MST_INSTANCE key"))
+        // YANG list key "instance", e.g. STP_MST_INST|0 arrives as key "0"
+        vector<string> keys = tokenize(key, config_db_key_delimiter);
+        uint16_t instance_id;
+        if (keys.size() != 1 || !parseMstInstance(keys[0], instance_id, "STP_MST_INST instance"))
         {
-            SWSS_LOG_ERROR("Invalid STP MST instance key %s, ignoring", key.c_str());
+            SWSS_LOG_ERROR("Invalid STP_MST_INST key %s, ignoring", key.c_str());
             it = consumer.m_toSync.erase(it);
             continue;
         }
-        uint16_t instance_id = static_cast<uint16_t>(parsedInstance);
 
         uint16_t priority = 32768; // Default bridge priority
         string vlan_list_str;
@@ -1370,29 +1394,17 @@ void StpMgr::doStpMstInstPortTask(Consumer &consumer)
         string key = kfvKey(t);
         string op = kfvOp(t);
 
-        string mstKey = key.substr(9);//Remove INSTANCE keyword
-        size_t found = mstKey.find(CONFIGDB_KEY_SEPARATOR);
-
+        // YANG list key "inst_id ifname", e.g. STP_MST_PORT|0|Ethernet52 arrives as key "0|Ethernet52"
+        vector<string> keys = tokenize(key, config_db_key_delimiter);
         uint16_t mst_id;
-        string intfName;
-        if (found != string::npos)
+        if (keys.size() != 2 || keys[1].empty() ||
+            !parseMstInstance(keys[0], mst_id, "STP_MST_PORT inst_id"))
         {
-            int parsedMstId;
-            if (!parseInteger(mstKey.substr(0, found), parsedMstId, "MST instance port key"))
-            {
-                SWSS_LOG_ERROR("Invalid STP MST instance port key %s, ignoring", key.c_str());
-                it = consumer.m_toSync.erase(it);
-                continue;
-            }
-            mst_id = static_cast<uint16_t>(parsedMstId);
-            intfName = mstKey.substr(found + 1);
-        }
-        else
-        {
-            SWSS_LOG_ERROR("Invalid key format %s", kfvKey(t).c_str());
+            SWSS_LOG_ERROR("Invalid STP_MST_PORT key %s, ignoring", key.c_str());
             it = consumer.m_toSync.erase(it);
             continue;
         }
+        string intfName = keys[1];
 
         SWSS_LOG_INFO("STP MST intf key:%s op:%s", key.c_str(), op.c_str());
 
