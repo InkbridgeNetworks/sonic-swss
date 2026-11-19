@@ -1361,7 +1361,9 @@ void StpMgr::processStpMstInstPortAttr(const string op, uint16_t mst_id, const s
     if (op == SET_COMMAND)
     {
         msg.opcode = STP_SET_COMMAND;
+        // -1 tells mstpmgr_process_inst_port_config_msg() to use the port level value
         msg.priority = -1;
+        msg.path_cost = -1;
 
         for (auto i : tupEntry)
         {
