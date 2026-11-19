@@ -27,6 +27,10 @@
 
 #define MAX_VLANS 4096
 
+// VLAN IDs stpd accepts: MIN_VLAN_ID up to, not including, MAX_VLAN_ID in sonic-stp l2.h
+#define STP_MIN_VLAN_ID 1
+#define STP_MAX_VLAN_ID 4094
+
 // Maximum number of instances supported
 #define L2_INSTANCE_MAX             MAX_VLANS
 #define STP_DEFAULT_MAX_INSTANCES   255

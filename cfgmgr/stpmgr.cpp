@@ -1250,7 +1250,6 @@ void StpMgr::doStpMstInstTask(Consumer &consumer)
         }
 
         uint16_t priority = 32768; // Default bridge priority
-        string vlan_list_str;
         vector<uint16_t> vlan_ids;
 
         SWSS_LOG_INFO("STP_MST instance key %s op %s", key.c_str(), op.c_str());
@@ -1270,10 +1269,10 @@ void StpMgr::doStpMstInstTask(Consumer &consumer)
                         priority = static_cast<uint16_t>(parsedPriority);
                     }
                 }
-                else if (fvField(i) == "vlan_list")
+                else if (fvField(i) == "vlan@")
                 {
-                    vlan_list_str = fvValue(i);
-                    configValid = parseVlanList(vlan_list_str, vlan_ids);
+                    // YANG leaf-list "vlan", stored by ConfigDBConnector as "vlan@": "10,20"
+                    configValid = parseVlanList(fvValue(i), vlan_ids);
                 }
 
                 if (!configValid)
@@ -1680,6 +1679,13 @@ bool StpMgr::parseVlanList(const std::string &vlanStr, std::vector<uint16_t> &vl
                 return false;
             }
 
+            if (start < STP_MIN_VLAN_ID || end > STP_MAX_VLAN_ID || start > end)
+            {
+                SWSS_LOG_ERROR("Invalid VLAN range %s", segment.c_str());
+                vlanList.clear();
+                return false;
+            }
+
             // Add all VLANs in the range to the list
             for (int i = start; i <= end; ++i) {
                 vlanList.push_back(static_cast<uint16_t>(i));
@@ -1689,6 +1695,12 @@ bool StpMgr::parseVlanList(const std::string &vlanStr, std::vector<uint16_t> &vl
             int vlan;
             if (!parseInteger(segment, vlan, "vlan_list entry"))
             {
+                vlanList.clear();
+                return false;
+            }
+            if (vlan < STP_MIN_VLAN_ID || vlan > STP_MAX_VLAN_ID)
+            {
+                SWSS_LOG_ERROR("Invalid VLAN %s", segment.c_str());
                 vlanList.clear();
                 return false;
             }
