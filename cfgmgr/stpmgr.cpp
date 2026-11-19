@@ -260,11 +260,16 @@ void StpMgr::doStpGlobalTask(Consumer &consumer)
                 if (ret_pvst != 0)
                     SWSS_LOG_ERROR("ebtables del failed for PVST %d", ret_pvst);
             }
-            l2ProtoEnabled = L2_NONE;
         }
 
         // Send the message to the daemon
         sendMsgStpd(STP_BRIDGE_CONFIG, sizeof(msg), (void *)&msg);
+
+        // The DEL goes out in the mode being removed, because stpd dispatches on proto_mode
+        if (op == DEL_COMMAND)
+        {
+            l2ProtoEnabled = L2_NONE;
+        }
 
         // VLAN member updates that arrived before MST mode were dropped, so stpd has none yet
         if (mstStarted)
@@ -1594,6 +1599,8 @@ int StpMgr::sendMsgStpd(STP_MSG_TYPE msgType, uint32_t msgLen, void *data)
 
     tx_msg->msg_type = msgType;
     tx_msg->msg_len  = msgLen;
+    // stpmgr_process_ipc_msg() in sonic-stp drops most message types unless proto_mode is PVSTP or MSTP
+    tx_msg->proto_mode = l2ProtoEnabled;
     memcpy(tx_msg->data, data, msgLen);
 
     bzero(&addr, sizeof(addr));
