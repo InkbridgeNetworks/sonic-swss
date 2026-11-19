@@ -1234,9 +1234,6 @@ void StpMgr::doStpMstInstTask(Consumer &consumer)
     auto it = consumer.m_toSync.begin();
     while (it != consumer.m_toSync.end())
     {
-        STP_MST_INST_CONFIG_MSG *msg = NULL;
-        uint32_t len = 0;
-
         KeyOpFieldsValuesTuple t = it->second;
 
         string key = kfvKey(t);
@@ -1293,51 +1290,49 @@ void StpMgr::doStpMstInstTask(Consumer &consumer)
             }
 
             updateVlanInstanceMap(instance_id, vlan_ids, true);
-
-            uint32_t vlan_count = static_cast<uint32_t>(vlan_ids.size());
-            len = sizeof(STP_MST_INST_CONFIG_MSG) + static_cast<uint32_t>(vlan_count * sizeof(VLAN_LIST));
-
-            msg = (STP_MST_INST_CONFIG_MSG *)calloc(1, len);
-            if (!msg)
-            {
-                SWSS_LOG_ERROR("Memory allocation failed for STP_MST_INST_CONFIG_MSG");
-                return;
-            }
-
-            msg->opcode = STP_SET_COMMAND;
-            msg->mst_id = instance_id;
-            msg->priority = priority;
-            msg->vlan_count = static_cast<uint16_t>(vlan_ids.size());
-            #pragma GCC diagnostic push
-            #pragma GCC diagnostic ignored "-Waddress-of-packed-member"
-            VLAN_LIST *vlan_attr = (VLAN_LIST *)&msg->vlan_list;
-            #pragma GCC diagnostic pop
-            for (size_t i = 0; i < vlan_ids.size(); i++)
-            {
-                vlan_attr[i].vlan_id = vlan_ids[i];
-            }
+            sendMstInstConfig(STP_SET_COMMAND, instance_id, priority, vlan_ids);
         }
         else if (op == DEL_COMMAND)
         {
-            len = sizeof(STP_MST_INST_CONFIG_MSG);
-            msg = (STP_MST_INST_CONFIG_MSG *)calloc(1, len);
-            if (!msg)
-            {
-                SWSS_LOG_ERROR("Memory allocation failed for MST_INST_CONFIG_MSG");
-                return;
-            }
-
-            msg->opcode = STP_DEL_COMMAND;
-            msg->mst_id = instance_id;
             updateVlanInstanceMap(instance_id, vlan_ids, false);
+            sendMstInstConfig(STP_DEL_COMMAND, instance_id, priority, vlan_ids);
         }
-
-        sendMsgStpd(STP_MST_INST_CONFIG, len, (void *)msg);
-        if (msg)
-            free(msg);
 
         it = consumer.m_toSync.erase(it);
     }
+}
+
+/*
+ * Send one instance to stpd. mstpmgr_process_inst_vlan_config_msg() in sonic-stp reads
+ * the body as STP_MST_INSTANCE_CONFIG_MSG, an instance count followed by the instances.
+ */
+void StpMgr::sendMstInstConfig(uint8_t opcode, uint16_t mst_id, int priority, const vector<uint16_t> &vlan_ids)
+{
+    STP_MST_INST_CONFIG_MSG inst;
+    vector<uint8_t> buf;
+    vector<VLAN_LIST> vlan_list(vlan_ids.size());
+
+    memset(&inst, 0, sizeof(inst));
+    inst.opcode = opcode;
+    inst.mst_id = mst_id;
+    inst.priority = priority;
+    inst.vlan_count = static_cast<uint16_t>(vlan_ids.size());
+
+    for (size_t i = 0; i < vlan_ids.size(); i++)
+    {
+        vlan_list[i].vlan_id = vlan_ids[i];
+    }
+
+    buf.resize(sizeof(STP_MST_INSTANCE_CONFIG_MSG) + sizeof(inst) + vlan_list.size() * sizeof(VLAN_LIST));
+    buf[offsetof(STP_MST_INSTANCE_CONFIG_MSG, mst_count)] = 1;
+    memcpy(&buf[offsetof(STP_MST_INSTANCE_CONFIG_MSG, mst_list)], &inst, sizeof(inst));
+    if (!vlan_list.empty())
+    {
+        memcpy(&buf[offsetof(STP_MST_INSTANCE_CONFIG_MSG, mst_list) + sizeof(inst)], vlan_list.data(),
+               vlan_list.size() * sizeof(VLAN_LIST));
+    }
+
+    sendMsgStpd(STP_MST_INST_CONFIG, static_cast<uint32_t>(buf.size()), buf.data());
 }
 
 void StpMgr::processStpMstInstPortAttr(const string op, uint16_t mst_id, const string intfName,
