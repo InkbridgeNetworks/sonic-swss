@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cctype>
 #include <cstdint>
+#include <unordered_map>
 
 #include <iostream>
 #include <algorithm>
@@ -68,6 +69,28 @@ static bool parseMstInstance(const std::string &value, uint16_t &result, const c
     }
 
     result = static_cast<uint16_t>(parsed);
+    return true;
+}
+
+/*
+ * Map an STP_PORT link_type enum name from the YANG model to the LinkType that
+ * stpd expects (stp_ipc.h in sonic-stp).
+ */
+static bool parseLinkType(const std::string &value, LinkType &result)
+{
+    static const std::unordered_map<std::string, LinkType> linkTypeMap = {
+        { "auto",           AUTO },
+        { "shared",         SHARED },
+        { "point-to-point", POINT_TO_POINT },
+    };
+
+    auto found = linkTypeMap.find(value);
+    if (found == linkTypeMap.end())
+    {
+        return false;
+    }
+
+    result = found->second;
     return true;
 }
 
@@ -755,14 +778,13 @@ void StpMgr::processStpPortAttr(const string op,
             }
             else if (field== "link_type" && l2ProtoEnabled == L2_MSTP)
             {
-                int linkType;
-                if (!parseInteger(value, linkType, "link_type"))
+                if (!parseLinkType(value, msg->link_type))
                 {
-                    SWSS_LOG_ERROR("Invalid STP port configuration for %s, ignoring", intfName.c_str());
+                    SWSS_LOG_ERROR("Invalid link_type '%s' in STP_PORT|%s, ignoring",
+                                   value.c_str(), intfName.c_str());
                     free(msg);
                     return;
                 }
-                msg->link_type = static_cast<LinkType>(linkType);
             }
         }
     }
