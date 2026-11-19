@@ -1289,7 +1289,20 @@ void StpMgr::doStpMstInstTask(Consumer &consumer)
             }
 
             updateVlanInstanceMap(instance_id, vlan_ids, true);
-            sendMstInstConfig(STP_SET_COMMAND, instance_id, priority, vlan_ids);
+
+            /*
+             * stpd ignores a SET without VLANs for any instance but the CIST, so removing
+             * the last VLAN would leave the old VLANs in the MSTI. A DEL returns them to
+             * the CIST, and the next SET with VLANs carries the priority again.
+             */
+            if (vlan_ids.empty() && instance_id != MST_CIST_INSTANCE)
+            {
+                sendMstInstConfig(STP_DEL_COMMAND, instance_id, priority, vlan_ids);
+            }
+            else
+            {
+                sendMstInstConfig(STP_SET_COMMAND, instance_id, priority, vlan_ids);
+            }
         }
         else if (op == DEL_COMMAND)
         {

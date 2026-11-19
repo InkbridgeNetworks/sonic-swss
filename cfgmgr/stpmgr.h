@@ -31,6 +31,9 @@
 #define STP_MIN_VLAN_ID 1
 #define STP_MAX_VLAN_ID 4094
 
+// MSTP_MSTID_CIST in sonic-stp mstp_common.h
+#define MST_CIST_INSTANCE 0
+
 // Maximum number of instances supported
 #define L2_INSTANCE_MAX             MAX_VLANS
 #define STP_DEFAULT_MAX_INSTANCES   255
