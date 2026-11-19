@@ -165,6 +165,7 @@ void StpMgr::doStpGlobalTask(Consumer &consumer)
     {
         STP_BRIDGE_CONFIG_MSG msg;
         memset(&msg, 0, sizeof(STP_BRIDGE_CONFIG_MSG));
+        bool mstStarted = false;
 
         KeyOpFieldsValuesTuple t = it->second;
 
@@ -219,6 +220,7 @@ void StpMgr::doStpGlobalTask(Consumer &consumer)
                         if (l2ProtoEnabled == L2_NONE)
                         {
                             l2ProtoEnabled = L2_MSTP;
+                            mstStarted = true;
                         }
                         msg.stp_mode = L2_MSTP;
 
@@ -263,6 +265,12 @@ void StpMgr::doStpGlobalTask(Consumer &consumer)
 
         // Send the message to the daemon
         sendMsgStpd(STP_BRIDGE_CONFIG, sizeof(msg), (void *)&msg);
+
+        // VLAN member updates that arrived before MST mode were dropped, so stpd has none yet
+        if (mstStarted)
+        {
+            sendAllMstVlanMembers();
+        }
 
         // Move to the next item
         it = consumer.m_toSync.erase(it);
@@ -884,6 +892,29 @@ void StpMgr::doVlanMemUpdateTask(Consumer &consumer)
         }
 
         SWSS_LOG_INFO("STP vlan mem key:%s op:%s inst:%d", key.c_str(), op.c_str(), m_vlanInstMap[vlan_id]);
+        if (l2ProtoEnabled == L2_MSTP && !isLagEmpty(intfName))
+        {
+            PORT_LIST port;
+            memset(&port, 0, sizeof(port));
+            strncpy(port.intf_name, intfName.c_str(), IFNAMSIZ - 1);
+            port.tagging_mode = TAGGED_MODE;
+
+            if (op == SET_COMMAND)
+            {
+                port.tagging_mode = getVlanMemMode(key);
+                if (port.tagging_mode == INVALID_MODE)
+                {
+                    SWSS_LOG_ERROR("invalid mode %s", key.c_str());
+                    it = consumer.m_toSync.erase(it);
+                    continue;
+                }
+            }
+
+            sendMstVlanPortList(static_cast<uint16_t>(vlan_id), op == SET_COMMAND, { port });
+            it = consumer.m_toSync.erase(it);
+            continue;
+        }
+
         // If STP is running on this VLAN, notify STPd
         if (m_vlanInstMap[vlan_id] != INVALID_INSTANCE && !isLagEmpty(intfName))
         {
@@ -1019,6 +1050,21 @@ void StpMgr::doLagMemUpdateTask(Consumer &consumer)
             }
             else
                 SWSS_LOG_ERROR("PO not found %s", po_name.c_str());
+        }
+
+        if (notifyStpd && l2ProtoEnabled == L2_MSTP)
+        {
+            // doVlanMemUpdateTask() skipped this LAG's VLAN members while it was empty
+            vector<VLAN_ATTR> po_vlans;
+            getAllPortVlan(po_name, po_vlans);
+            for (const auto &vlan : po_vlans)
+            {
+                PORT_LIST port;
+                memset(&port, 0, sizeof(port));
+                strncpy(port.intf_name, po_name.c_str(), IFNAMSIZ - 1);
+                port.tagging_mode = vlan.mode;
+                sendMstVlanPortList(static_cast<uint16_t>(vlan.vlan_id), true, { port });
+            }
         }
 
         if (notifyStpd && l2ProtoEnabled != L2_NONE)
@@ -1311,6 +1357,75 @@ void StpMgr::doStpMstInstTask(Consumer &consumer)
         }
 
         it = consumer.m_toSync.erase(it);
+    }
+}
+
+/*
+ * Tell stpd which ports joined (add) or left a VLAN. In MST mode this message is the
+ * only source of VLAN membership for stpd (mstpmgr_process_vlan_mem_config_msg() in
+ * sonic-stp). Ports are split across messages to fit stpd's receive buffer.
+ */
+void StpMgr::sendMstVlanPortList(uint16_t vlan_id, bool add, const vector<PORT_LIST> &ports)
+{
+    const size_t max_ports = (STPD_IPC_BUFFER_SIZE - offsetof(STP_IPC_MSG, data) - sizeof(STP_MST_VLAN_PORT_MAP)) /
+                             sizeof(PORT_LIST);
+
+    for (size_t first = 0; first < ports.size(); first += max_ports)
+    {
+        size_t count = min(max_ports, ports.size() - first);
+        vector<uint8_t> buf(sizeof(STP_MST_VLAN_PORT_MAP) + count * sizeof(PORT_LIST));
+        STP_MST_VLAN_PORT_MAP *msg = reinterpret_cast<STP_MST_VLAN_PORT_MAP *>(buf.data());
+
+        msg->vlan_id = vlan_id;
+        msg->port_count = static_cast<uint16_t>(count);
+        msg->stp_mode = L2_MSTP;
+        msg->add = add ? 1 : 0;
+        memcpy(msg->port_list, &ports[first], count * sizeof(PORT_LIST));
+
+        sendMsgStpd(STP_MST_VLAN_PORT_LIST_CONFIG, static_cast<uint32_t>(buf.size()), buf.data());
+    }
+}
+
+// Send every VLAN member in STATE_DB to stpd, grouped by VLAN
+void StpMgr::sendAllMstVlanMembers()
+{
+    vector<string> vmKeys;
+    map<uint16_t, vector<PORT_LIST>> members;
+
+    m_stateVlanMemberTable.getKeys(vmKeys);
+    for (const auto &key : vmKeys)
+    {
+        // STATE_DB VLAN_MEMBER_TABLE|Vlan100|Ethernet4 arrives as key "Vlan100|Ethernet4"
+        vector<string> keys = tokenize(key, config_db_key_delimiter);
+        int vlan_id;
+        if (keys.size() != 2 || keys[0].compare(0, strlen(VLAN_PREFIX), VLAN_PREFIX) != 0 ||
+            !parseInteger(keys[0].substr(strlen(VLAN_PREFIX)), vlan_id, "VLAN member key") ||
+            vlan_id < STP_MIN_VLAN_ID || vlan_id > STP_MAX_VLAN_ID)
+        {
+            SWSS_LOG_ERROR("Invalid VLAN member key %s, ignoring", key.c_str());
+            continue;
+        }
+
+        if (isLagEmpty(keys[1]))
+        {
+            continue;
+        }
+
+        PORT_LIST port;
+        memset(&port, 0, sizeof(port));
+        strncpy(port.intf_name, keys[1].c_str(), IFNAMSIZ - 1);
+        port.tagging_mode = getVlanMemMode(key);
+        if (port.tagging_mode == INVALID_MODE)
+        {
+            SWSS_LOG_ERROR("invalid mode %s", key.c_str());
+            continue;
+        }
+        members[static_cast<uint16_t>(vlan_id)].push_back(port);
+    }
+
+    for (const auto &vlan : members)
+    {
+        sendMstVlanPortList(vlan.first, true, vlan.second);
     }
 }
 
